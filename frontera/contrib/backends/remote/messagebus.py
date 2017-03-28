@@ -62,6 +62,7 @@ class MessageBusBackend(Backend):
 
     def _get_next_requests(self, max_n_requests, **kwargs):
         requests = []
+        self._logger.debug('Trying to get new requests...')
         for encoded in self.consumer.get_messages(count=max_n_requests, timeout=self._get_timeout):
             try:
                 request = self._decoder.decode_request(encoded)
@@ -69,6 +70,9 @@ class MessageBusBackend(Backend):
                 self._logger.warning("Could not decode message: {0}, error {1}".format(encoded, str(exc)))
             else:
                 requests.append(request)
+        self._logger.debug('Got %d new requests', len(requests))
+        self._logger.debug('Sending offset info to DB worker... pId: %s, offset: %s', self.partition_id,
+                                                                  self.consumer.get_offset(self.partition_id))
         self.spider_log_producer.send(b'0123456789abcdef0123456789abcdef012345678',
                                       self._encoder.encode_offset(self.partition_id,
                                                                   self.consumer.get_offset(self.partition_id)))
