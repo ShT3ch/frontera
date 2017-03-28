@@ -133,6 +133,7 @@ class DBWorker(object):
         for m in self.spider_log_consumer.get_messages(timeout=1.0, count=self.spider_log_consumer_batch_size):
             try:
                 msg = self._decoder.decode(m)
+                logger.debug('Working with "%s" msg', msg)
             except (KeyError, TypeError) as e:
                 logger.error("Decoding error: %s", e)
                 continue
@@ -169,18 +170,10 @@ class DBWorker(object):
                         continue
                     if type == 'offset':
                         _, partition_id, offset = msg
-                        producer_offset = self.spider_feed_producer.get_offset(partition_id)
-                        if producer_offset is None:
-                            continue
-                        else:
-                            lag = producer_offset - offset
-                            if lag < 0:
-                                # non-sense in general, happens when SW is restarted and not synced yet with Spiders.
-                                continue
-                            if lag < self.max_next_requests or offset == 0:
-                                self.spider_feed.mark_ready(partition_id)
-                            else:
-                                self.spider_feed.mark_busy(partition_id)
+                        self.spider_feed_producer.consumer_counter[partition_id] = offset
+
+                        self.set_spider_readyness_state(partition_id)
+
                         continue
                     logger.debug('Unknown message type %s', type)
                 except Exception as exc:
@@ -201,6 +194,17 @@ class DBWorker(object):
         self.stats['last_consumption_run'] = asctime()
         self.slot.schedule()
         return consumed
+
+    def set_spider_readyness_state(self, partition_id):
+        lag = self.spider_feed_producer.get_offset(partition_id) - self.spider_feed_producer.get_consumer_offset(
+            partition_id)
+        if lag < 0:
+            # non-sense in general, happens when SW is restarted and not synced yet with Spiders.
+            return
+        if lag < self.max_next_requests or self.spider_feed_producer.get_consumer_offset(partition_id) == 0:
+            self.spider_feed.mark_ready(partition_id)
+        else:
+            self.spider_feed.mark_busy(partition_id)
 
     def consume_scoring(self, *args, **kwargs):
         consumed = 0
@@ -244,9 +248,11 @@ class DBWorker(object):
             return request.meta[b'fingerprint']
 
         partitions = self.spider_feed.available_partitions()
-        logger.info("Getting new batches for partitions %s" % str(",").join(map(str, partitions)))
         if not partitions:
+            logger.info('No crawlers available, skipping batch generation')
             return 0
+
+        logger.info("Getting new batches for partitions %s" % str(",").join(map(str, partitions)))
 
         count = 0
         if self.spider_feed_partitioning == 'hostname':
@@ -268,6 +274,8 @@ class DBWorker(object):
             finally:
                 count += 1
             self.spider_feed_producer.send(get_key(request), eo)
+            for partition_id in partitions:
+                self.set_spider_readyness_state(partition_id)
 
         self.stats['pushed_since_start'] += count
         self.stats['last_batch_size'] = count
@@ -302,7 +310,7 @@ if __name__ == '__main__':
     else:
         logging.basicConfig(level=args.log_level)
         logger.setLevel(args.log_level)
-        logger.addHandler(CONSOLE)
+        # logger.addHandler(CONSOLE)
 
     worker = DBWorker(settings, args.no_batches, args.no_incoming, args.no_scoring)
     server = WorkerJsonRpcService(worker, settings)
