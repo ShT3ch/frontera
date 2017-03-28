@@ -67,6 +67,7 @@ class Producer(object):
         self.sender = context.zeromq.socket(zmq.PUB)
         self.sender.connect(location)
         self.counters = {}
+        self.consumer_counter = {}
         self.global_counter = 0
         self.stats = context.stats
         self.stat_key = "producer-%s" % identity
@@ -98,7 +99,10 @@ class Producer(object):
         pass
 
     def get_offset(self, partition_id):
-        return self.counters.get(partition_id, None)
+        return self.counters.get(partition_id, 0)
+
+    def get_consumer_offset(self, partition_id):
+        return self.consumer_counter.get(partition_id, 0)
 
 
 class SpiderLogProducer(Producer):
@@ -172,7 +176,7 @@ class SpiderFeedStream(BaseSpiderFeedStream):
         self.in_location = messagebus.socket_config.db_out()
         self.out_location = messagebus.socket_config.spiders_in()
         self.partitions = messagebus.spider_feed_partitions
-        self.ready_partitions = set(self.partitions)
+        self.ready_partitions = set()
         self.consumer_hwm = messagebus.spider_feed_rcvhwm
         self.producer_hwm = messagebus.spider_feed_sndhwm
         self.hostname_partitioning = messagebus.hostname_partitioning
